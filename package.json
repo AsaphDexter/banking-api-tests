@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "perf:smoke": "k6 run perf/smoke.js",
     "perf:load": "k6 run perf/load.js",
-    "perf:login": "k6 run perf/login-throughput.js"
+    "perf:login": "k6 run perf/login-throughput.js",
+    "perf:isolation": "k6 run perf/login-isolation.js"
   },
   "license": "MIT",
   "devDependencies": {

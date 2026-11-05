@@ -126,20 +126,20 @@ test.describe('account lockout', () => {
     expect((await request.get('/api/account', { headers: user.headers })).status()).toBe(200);
   });
 
-  test('FINDING: anyone can lock any account and the API has no way to unlock it', async ({ request }) => {
-    test.info().annotations.push({
-      type: 'finding',
-      description: 'Lockout is permanent and needs only the victim username, so it can be abused to deny service. '
-        + 'Suggested fix: time-based lockout and per-client throttling.',
-    });
-    const victim = uniqueUsername();
-    await register(request, victim);
-    for (const password of ['Wrong1111', 'Wrong2222', 'Wrong3333']) {
-      await request.post('/api/login', { data: { username: victim, password } });
+  test('FIXED: a lock is temporary and the response says how long it lasts', async ({ request }) => {
+    const username = uniqueUsername();
+    await register(request, username);
+    for (const password of ['Wrong1111', 'Wrong2222']) {
+      await request.post('/api/login', { data: { username, password } });
     }
-    for (let i = 0; i < 3; i += 1) {
-      const response = await request.post('/api/login', { data: { username: victim, password: PASSWORD } });
-      expect(response.status()).toBe(423);
+    const locking = await request.post('/api/login', { data: { username, password: 'Wrong3333' } });
+    expect(locking.status()).toBe(423);
+    const blocked = await request.post('/api/login', { data: { username, password: PASSWORD } });
+    expect(blocked.status()).toBe(423);
+    for (const response of [locking, blocked]) {
+      const wait = Number(response.headers()['retry-after']);
+      expect(wait).toBeGreaterThan(0);
+      expect(wait).toBeLessThanOrEqual(900); // 15 minutes at most; short-lockout.spec.ts checks it really ends
     }
   });
 
@@ -168,6 +168,7 @@ test.describe('tokens and logout', () => {
     ['POST', '/api/withdraw', { amount: 10 }],
     ['POST', '/api/transfer', { toAccountNumber: '1000000001', amount: 10 }],
     ['POST', '/api/logout', {}],
+    ['POST', '/api/password', { oldPassword: 'Passw0rd1', newPassword: 'N3wPassword' }],
   ];
 
   for (const [method, path, data] of protectedCalls) {

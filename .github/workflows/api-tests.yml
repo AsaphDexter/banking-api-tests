@@ -14,6 +14,9 @@ on:
 env:
   BANKING_APP_REPO: AsaphDexter/BasicBankingApplication
   API_URL: http://localhost:8080
+  API_URL_SHORT_LOCKOUT: http://localhost:8081
+  API_URL_THROTTLED: http://localhost:8082
+  ADMIN_TOKEN: ci-admin-token-0123456789
 
 jobs:
   api-tests:
@@ -42,15 +45,25 @@ jobs:
         working-directory: banking-app
         run: mvn -B -q -DskipTests compile dependency:copy-dependencies -DincludeScope=runtime
 
-      - name: Start the banking API (in-memory demo mode)
+      - name: Start three instances of the banking API (in-memory demo mode)
         run: |
-          nohup java -cp "banking-app/target/classes:banking-app/target/dependency/*" \
-            basicbankingapp.BankingApiApp --memory --port 8080 > api.log 2>&1 &
-          for i in $(seq 1 30); do
-            if curl -sf "$API_URL/api/health" > /dev/null; then echo "API is up"; exit 0; fi
-            sleep 1
+          CP="banking-app/target/classes:banking-app/target/dependency/*"
+          # main: normal settings; the per-client login limit is raised so the suite's deliberate failures do not trip it
+          nohup java -cp "$CP" basicbankingapp.BankingApiApp --memory --port 8080 \
+            --admin-token "$ADMIN_TOKEN" --login-failure-limit 100000 > api-main.log 2>&1 &
+          # accounts lock for only 2 seconds, so lock expiry can be tested
+          nohup java -cp "$CP" basicbankingapp.BankingApiApp --memory --port 8081 \
+            --lockout-seconds 2 --login-failure-limit 100000 > api-short-lockout.log 2>&1 &
+          # at most 5 failed logins per client, so throttling can be tested
+          nohup java -cp "$CP" basicbankingapp.BankingApiApp --memory --port 8082 \
+            --admin-token "$ADMIN_TOKEN" --login-failure-limit 5 > api-throttle.log 2>&1 &
+          for port in 8080 8081 8082; do
+            for i in $(seq 1 30); do
+              if curl -sf "http://localhost:$port/api/health" > /dev/null; then echo "API on $port is up"; break; fi
+              sleep 1
+              if [ "$i" = "30" ]; then echo "API on $port did not start"; cat api-*.log; exit 1; fi
+            done
           done
-          echo "API did not start"; cat api.log; exit 1
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -77,6 +90,9 @@ jobs:
       - name: Performance load test
         run: k6 run --summary-export=perf-load-summary.json perf/load.js
 
+      - name: Performance test - does signing in slow everyone else down?
+        run: k6 run --summary-export=perf-isolation-summary.json perf/login-isolation.js
+
       - name: Upload test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -86,5 +102,5 @@ jobs:
             playwright-report/
             test-results/
             perf-*-summary.json
-            api.log
+            api-*.log
           if-no-files-found: ignore

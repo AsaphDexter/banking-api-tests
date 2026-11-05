@@ -5,6 +5,10 @@ export { expect };
 /** A password that satisfies the API's rules (8+ characters, a letter and a number). */
 export const PASSWORD = 'Passw0rd1';
 
+/** Must match the --admin-token the API instances are started with. */
+export const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? 'playwright-admin-token-123456';
+export const adminHeaders = { 'X-Admin-Token': ADMIN_TOKEN };
+
 export interface TestUser {
   username: string;
   password: string;
@@ -91,6 +95,22 @@ export function postRaw(
   headers: Record<string, string> = {},
 ): Promise<APIResponse> {
   return request.post(path, { data: body, headers: { 'Content-Type': 'application/json', ...headers } });
+}
+
+/** Locks a user out by sending three wrong passwords. */
+export async function lockOut(request: APIRequestContext, username: string): Promise<void> {
+  for (const password of ['Wrong1111', 'Wrong2222', 'Wrong3333']) {
+    await request.post('/api/login', { data: { username, password } });
+  }
+}
+
+/** True if the API at the project's base URL answers; used to skip specs when an instance is not running. */
+export async function isUp(request: APIRequestContext): Promise<boolean> {
+  try {
+    return (await request.get('/api/health')).ok();
+  } catch {
+    return false;
+  }
 }
 
 interface Fixtures {

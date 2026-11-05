@@ -24,8 +24,11 @@ test.describe('health and HTTP protocol behaviour', () => {
     });
   }
 
-  const postOnly = ['/api/register', '/api/login', '/api/logout', '/api/deposit', '/api/withdraw', '/api/transfer'];
-  const getOnly = ['/api/health', '/api/account', '/api/transactions'];
+  const postOnly = [
+    '/api/register', '/api/login', '/api/logout', '/api/deposit', '/api/withdraw', '/api/transfer',
+    '/api/password', '/api/admin/unlock',
+  ];
+  const getOnly = ['/api/health', '/api/account', '/api/transactions', '/api/admin/audit'];
 
   for (const path of postOnly) {
     test(`GET ${path} is 405 and says POST is allowed`, async ({ request }) => {
