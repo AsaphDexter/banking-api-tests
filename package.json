@@ -1,0 +1,23 @@
+{
+  "name": "banking-api-tests",
+  "version": "1.0.0",
+  "description": "Automated API tests and performance tests for the Basic Banking Application REST API",
+  "scripts": {
+    "test": "playwright test",
+    "test:report": "playwright show-report",
+    "typecheck": "tsc --noEmit",
+    "perf:smoke": "k6 run perf/smoke.js",
+    "perf:load": "k6 run perf/load.js",
+    "perf:login": "k6 run perf/login-throughput.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
+}

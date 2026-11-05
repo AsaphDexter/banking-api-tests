@@ -1,0 +1,90 @@
+name: API tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      banking_app_ref:
+        description: 'Branch or tag of BasicBankingApplication to test'
+        default: 'main'
+
+env:
+  BANKING_APP_REPO: AsaphDexter/BasicBankingApplication
+  API_URL: http://localhost:8080
+
+jobs:
+  api-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out these tests
+        uses: actions/checkout@v4
+
+      - name: Check out the banking API under test
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BANKING_APP_REPO }}
+          ref: ${{ github.event.inputs.banking_app_ref || 'main' }}
+          path: banking-app
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: banking-app/pom.xml
+
+      - name: Build the banking API and collect its libraries
+        working-directory: banking-app
+        run: mvn -B -q -DskipTests compile dependency:copy-dependencies -DincludeScope=runtime
+
+      - name: Start the banking API (in-memory demo mode)
+        run: |
+          nohup java -cp "banking-app/target/classes:banking-app/target/dependency/*" \
+            basicbankingapp.BankingApiApp --memory --port 8080 > api.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf "$API_URL/api/health" > /dev/null; then echo "API is up"; exit 0; fi
+            sleep 1
+          done
+          echo "API did not start"; cat api.log; exit 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install test dependencies
+        run: npm ci
+
+      - name: Type-check the tests
+        run: npm run typecheck
+
+      - name: Run the API tests
+        run: npx playwright test
+
+      - name: Set up k6
+        if: ${{ !cancelled() }}
+        uses: grafana/setup-k6-action@v1
+
+      - name: Performance smoke test
+        run: k6 run --summary-export=perf-smoke-summary.json perf/smoke.js
+
+      - name: Performance load test
+        run: k6 run --summary-export=perf-load-summary.json perf/load.js
+
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            playwright-report/
+            test-results/
+            perf-*-summary.json
+            api.log
+          if-no-files-found: ignore
