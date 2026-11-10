@@ -104,3 +104,24 @@ jobs:
             perf-*-summary.json
             api-*.log
           if-no-files-found: ignore
+
+  # The same tests, run the way a newcomer would: one command, everything in containers.
+  docker-compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run everything with Docker Compose
+        run: docker compose up --build --exit-code-from tests
+      - name: Show the API logs if something failed
+        if: ${{ failure() }}
+        run: docker compose logs api-main api-short-lockout api-throttle
+      - name: Upload reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-test-reports
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore

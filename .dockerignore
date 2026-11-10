@@ -1,0 +1,8 @@
+node_modules
+playwright-report
+test-results
+perf/results
+.git
+.github
+.idea
+*.log

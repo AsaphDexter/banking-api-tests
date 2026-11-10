@@ -19,6 +19,8 @@ anything that needs a production environment.
 |---|---|---|
 | Functional and negative API tests | Playwright (`tests/*.spec.ts`) | Does each endpoint do exactly what the contract says, and refuse everything else? |
 | Security-minded tests | `security`, `authentication`, `password-change`, `admin-and-audit`, `throttle` specs | Can one user reach another's money? Can passwords be guessed? Does hostile input or a bad token do harm? Do responses or logs leak secrets? |
+| Contract tests | `contract.spec.ts` + `tests/support/openapi.ts` | Does every real answer match the OpenAPI description the API publishes (status, content type, body shape, required headers)? Is every documented answer exercised? |
+| Safe-retry tests | `idempotency.spec.ts` | Can a client retry a money request without moving the money twice? |
 | Timing-dependent behaviour | `short-lockout` spec on a 2-second-lockout instance | Does a lock really end, and does the count really start over? |
 | Concurrency tests | `concurrency` spec | Can simultaneous requests overdraw an account, double-spend or create money? |
 | Smoke test | k6 `perf/smoke.js` | Is the whole API alive and consistent after a deploy? |
@@ -49,6 +51,8 @@ its instance's allowance, so that instance must be restarted between runs.)
 | R11 | An attacker can lock real users out for good | `authentication` (Retry-After), `short-lockout` (lock ends), `admin-and-audit` (admin unlock) |
 | R12 | Admin functions reachable without the admin token | `admin-and-audit` (missing, wrong and user tokens), `throttle` |
 | R13 | Security events not traceable, or the log itself can be abused | `admin-and-audit` (events, no secrets, log-forging text sanitised) |
+| R14 | A retried or double-clicked request moves money twice | `idempotency` (replay, key reuse, per-user keys, 20 parallel duplicates, failures not recorded) |
+| R15 | The API and its documentation drift apart and break clients | `contract` (every answer checked against the OpenAPI description; the description is valid; documented answers and scenarios must match one to one) |
 
 ## Findings and how they were resolved
 
@@ -60,6 +64,12 @@ each weakness now guard its fix.
 | 1 | Three wrong passwords locked a user **permanently** and nothing could unlock them, so anyone who knew a username could lock that user out | Locks last 15 minutes and say how long (`Retry-After`); an admin endpoint can unlock early; failed attempts per client are throttled (429) | `short-lockout`, `admin-and-audit`, `throttle`, `authentication` |
 | 2 | Sign-in held the bank's global lock while hashing the password, so one sign-in made **every other request wait** | Hashing runs outside the lock | k6 isolation test, below; deterministic unit test in the app repo |
 | 3 | No record of who did what | Audit log of registrations, logins, failures, locks, unlocks, password changes and transfers | `admin-and-audit` |
+
+### Spotted while writing the OpenAPI description
+
+| Finding | Fix |
+|---|---|
+| Transaction timestamps had **no time zone** (`2026-11-05T21:27:23.123456`), so a client could not tell what moment they meant. The description says `format: date-time`, which requires a zone | Timestamps are now UTC with a `Z`, always including seconds. The fix was made before the contract tests first ran; putting the old behaviour back makes the contract test fail (see the table of deliberate bugs below), so it is guarded from now on |
 
 ### Measured: does signing in slow everyone else down?
 
@@ -74,6 +84,20 @@ each weakness now guard its fix.
 Sign-in speed itself did not change on this machine: hashing is CPU-bound and there is one core, so about
 6 sign-ins per second is the ceiling here. What changed is that sign-ins no longer block anyone else, and on a
 multi-core machine sign-ins can now run in parallel too.
+
+## Safe retries: the rules the tests pin down
+
+| Situation | Answer |
+|---|---|
+| Same key, same request again | the first answer, byte for byte, `Idempotent-Replayed: true`; no money moves |
+| Same key, different amount / recipient / endpoint | 422 |
+| Same key from a different user | independent (keys belong to the user) |
+| First attempt failed (400, 404, 422) | nothing is remembered; the same key can be used again once the request is fixed |
+| 20 identical requests at once | one runs, 19 get its answer |
+| 20 requests at once, 20 different keys, whole balance | exactly one succeeds (a key is not a free pass) |
+| Bad key (too short or long, wrong characters, sent twice) | 400 |
+
+The Java tests also show that the stored answer survives a restart and that money and record commit together.
 
 ## Still open
 
@@ -91,6 +115,9 @@ multi-core machine sign-ins can now run in parallel too.
 6. **The admin token is one static secret** shared by all admins: no per-admin accounts, rotation or audit of who
    used it.
 7. **Plain HTTP and no rate limit beyond login throttling.**
+8. **The in-memory demo mode has no rollback**, unlike the database. It is only used for demos and these tests, and each money operation is a single step there, but a crash in the middle of a custom action could leave a partial change.
+9. **Expired idempotency records are only removed when a new key is stored**, so a quiet server keeps old rows until then.
+10. **The Docker setup could not be run in the environment where it was written** (no Docker there). Every piece around it was checked (the exact start commands, the health check, the folder layout the image builds, the compose file), and the CI jobs run the real thing.
 
 ## What the tests are worth: breaking the API on purpose
 
@@ -107,6 +134,12 @@ Each deliberate bug below was introduced into the API, the relevant specs were r
 | Audit log keeps control characters (log forging) | Caught: 1 test failed |
 | Locking removed from deposit / withdraw / transfer | Caught in 1 of 4 runs on a single core |
 | Password hashing moved back inside the lock (app repo unit test) | Caught every time: 2 tests failed |
+| Timestamps lose their time zone again (the old behaviour put back) | Caught by the contract tests: 1 failed |
+| `Retry-After` header dropped from the 423 answer | Caught by the contract tests: 2 failed |
+| A response field renamed (`balance` to `newBalance`) | Caught by the contract tests: 4 failed |
+| Idempotent answers never stored, so repeats run again | Caught: 11 failed |
+| Key reused for a different request not detected | Caught: 3 failed |
+| Keys shared between users instead of belonging to one | Caught: 3 failed |
 
 The locking row is the honest limit of black-box concurrency testing: a missing lock is a race, so it only shows
 up some of the time. The Playwright test uses several rounds of 150 simultaneous requests to make it likely, and

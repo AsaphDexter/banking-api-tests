@@ -11,6 +11,7 @@ import { defineConfig } from '@playwright/test';
  * If the last two are not running, their specs are skipped and everything else still runs.
  */
 export default defineConfig({
+  globalSetup: './global-setup.ts',
   testDir: './tests',
   timeout: 30_000,
   expect: { timeout: 5_000 },

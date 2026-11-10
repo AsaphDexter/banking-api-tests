@@ -1,0 +1,67 @@
+# One command runs everything:
+#
+#   docker compose up --build --exit-code-from tests
+#
+# It builds the banking API from its GitHub repository, starts three instances of it with different settings,
+# waits until they are healthy, then runs the Playwright tests against them. The exit code is the tests' exit code.
+# Reports appear in ./playwright-report and ./test-results.
+#
+#   docker compose down -v                                      remove the containers afterwards
+#   docker compose --profile perf run --rm k6 run /perf/smoke.js    run a k6 performance script
+#
+# To test your local copy of the banking app instead of the GitHub one:
+#   BANKING_APP_CONTEXT=../BasicBankingApplication docker compose up --build --exit-code-from tests
+name: banking-api-tests
+
+x-api: &api
+  build:
+    context: ${BANKING_APP_CONTEXT:-https://github.com/AsaphDexter/BasicBankingApplication.git#main}
+  image: banking-api-under-test       # the image's own health check is used by "depends_on" below
+
+x-admin-token: &admin-token ${ADMIN_TOKEN:-docker-admin-token-0123456789}
+
+services:
+  # normal settings; the per-client login limit is raised so the suite's deliberate failures do not trip it
+  api-main:
+    <<: *api
+    command: ["--host", "0.0.0.0", "--port", "8080", "--memory", "--admin-token", *admin-token,
+              "--login-failure-limit", "100000"]
+
+  # accounts lock for only 2 seconds, so lock expiry can be tested; no admin token (tests the "admin off" answers)
+  api-short-lockout:
+    <<: *api
+    command: ["--host", "0.0.0.0", "--port", "8080", "--memory", "--lockout-seconds", "2",
+              "--login-failure-limit", "100000"]
+
+  # at most 5 failed logins per client, so throttling can be tested
+  api-throttle:
+    <<: *api
+    command: ["--host", "0.0.0.0", "--port", "8080", "--memory", "--admin-token", *admin-token,
+              "--login-failure-limit", "5"]
+
+  tests:
+    build: .
+    depends_on:
+      api-main: { condition: service_healthy }
+      api-short-lockout: { condition: service_healthy }
+      api-throttle: { condition: service_healthy }
+    environment:
+      CI: "true"
+      API_URL: http://api-main:8080
+      API_URL_SHORT_LOCKOUT: http://api-short-lockout:8080
+      API_URL_THROTTLED: http://api-throttle:8080
+      ADMIN_TOKEN: *admin-token
+    volumes:
+      - ./playwright-report:/work/playwright-report
+      - ./test-results:/work/test-results
+
+  # performance tests, only when asked for:  docker compose --profile perf run --rm k6 run /perf/load.js
+  k6:
+    image: grafana/k6:latest
+    profiles: ["perf"]
+    depends_on:
+      api-main: { condition: service_healthy }
+    environment:
+      API_URL: http://api-main:8080
+    volumes:
+      - ./perf:/perf:ro

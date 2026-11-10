@@ -3,7 +3,7 @@
 [![API tests](https://github.com/AsaphDexter/banking-api-tests/actions/workflows/api-tests.yml/badge.svg)](https://github.com/AsaphDexter/banking-api-tests/actions/workflows/api-tests.yml)
 
 Automated tests for the REST API of [BasicBankingApplication](https://github.com/AsaphDexter/BasicBankingApplication):
-about 215 API tests in TypeScript with Playwright, four k6 performance scripts, and a GitHub Actions workflow
+about 300 API tests in TypeScript with Playwright, four k6 performance scripts, and a GitHub Actions workflow
 that builds the banking API, starts three instances of it, runs everything against them and publishes the reports.
 
 The tests are written the way a QA engineer would approach a payments API: contract and negative cases first,
@@ -19,6 +19,8 @@ the findings and an experiment that breaks the API on purpose to check the tests
 | Login, lockout, tokens | `authentication.spec.ts` | 401 vs 423 with `Retry-After`, counter reset, token format, logout revocation, bad headers |
 | Lock expiry | `short-lockout.spec.ts` | a 2-second lock really ends, the count starts over |
 | Login throttling | `throttle.spec.ts` | 5 failed logins per client then 429; a success does not reset the count |
+| Safe retries | `idempotency.spec.ts` | the same `Idempotency-Key` moves money once, key reuse is 422, parallel duplicates run once |
+| API contract | `contract.spec.ts` | every answer is checked against the OpenAPI description the API publishes; every documented response has a scenario |
 | Change password | `password-change.spec.ts` | other sessions ended, wrong old password counts towards the lockout, weak passwords refused |
 | Admin and audit log | `admin-and-audit.spec.ts` | admin token required, unlock, audit entries, no secrets, log-forging text sanitised |
 | Deposits, withdrawals, history | `account-and-money.spec.ts` | exact decimals, limits, 422 overdraft, `1e999999999`, history order |
@@ -30,6 +32,16 @@ the findings and an experiment that breaks the API on purpose to check the tests
 
 ## Run it
 
+### Option 1: one command with Docker (recommended)
+
+```bash
+docker compose up --build --exit-code-from tests
+```
+
+This builds the banking API from its GitHub repository, starts three instances with different settings, waits until they are healthy, runs all the Playwright tests against them, and exits with the tests' exit code. Reports appear in `playwright-report/` (open `index.html`) and `test-results/`. Clean up with `docker compose down -v`. To test a local copy of the banking app instead: `BANKING_APP_CONTEXT=../BasicBankingApplication docker compose up --build --exit-code-from tests` (PowerShell: set `$env:BANKING_APP_CONTEXT` first). Performance tests: `docker compose --profile perf run --rm k6 run /perf/smoke.js`.
+
+### Option 2: start the instances yourself
+
 You need Node 20+ and the banking API running. Three instances are used, because some behaviour needs special
 settings. Start them from the banking app project (run `BankingApiApp` three times, for example as three IntelliJ
 run configurations, each with these program arguments):
@@ -37,7 +49,7 @@ run configurations, each with these program arguments):
 | Port | Program arguments | Used for |
 |---|---|---|
 | 8080 | `--memory --port 8080 --admin-token playwright-admin-token-123456 --login-failure-limit 100000` | almost all tests |
-| 8081 | `--memory --port 8081 --lockout-seconds 2 --login-failure-limit 100000` | lock expiry |
+| 8081 | `--memory --port 8081 --lockout-seconds 2 --login-failure-limit 100000` | lock expiry, and the "admin switched off" answers (this one has no admin token) |
 | 8082 | `--memory --port 8082 --login-failure-limit 5 --admin-token playwright-admin-token-123456` | throttling (restart it before each run) |
 
 ```bash
@@ -46,6 +58,8 @@ npx playwright test                      # everything
 npx playwright test --project=api        # only the main instance (the other two specs are skipped if 8081/8082 are down)
 npx playwright show-report               # open the HTML report
 ```
+
+The tests check the main instance first and stop with a clear message if it is not running, was started without `--admin-token`, or has the default login limit. If you ever see many `429` failures, the instance on 8080 was started without `--login-failure-limit 100000`: restart it with the arguments above.
 
 Change addresses or the admin token with `API_URL`, `API_URL_SHORT_LOCKOUT`, `API_URL_THROTTLED` and `ADMIN_TOKEN`
 (PowerShell: `$env:API_URL="http://localhost:9090"; npx playwright test`).
@@ -69,6 +83,8 @@ npm run perf:login      # how many sign-ins per second the API can sustain
 4. runs the k6 smoke, load and isolation tests (the load test fails if any money is created or destroyed; the isolation test fails if sign-ins make ordinary requests slow)
 5. uploads the Playwright HTML report, JUnit XML, k6 summaries and the API logs as a downloadable artifact
 
+A second job runs the same tests through `docker compose up`, to prove the one-command setup works.
+
 If the banking repository is private, add a token to the checkout step.
 
 ## Layout
@@ -78,6 +94,7 @@ tests/                 Playwright specs
 tests/support/         shared helpers and fixtures (create a user, call the API)
 perf/                  k6 scripts
 docs/TEST-PLAN.md      scope, approach, risk register, findings
+Dockerfile, docker-compose.yml   run everything with one command
 .github/workflows/     CI pipeline
 ```
 
